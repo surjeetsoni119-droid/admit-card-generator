@@ -10,6 +10,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from PIL import Image, ImageFilter
+from utils import split_optional_subjects, all_known_optional_subjects
 
 CARD_W = 190 * mm
 CARD_H = 130 * mm
@@ -144,7 +145,8 @@ def _draw_card(c, x0, y0, student, school_info, subjects):
     # --- Student details ---
     detail_x = x0 + 6 * mm
     detail_y_start = top - header_h - 12 * mm - exam_type_offset
-    line_gap = 6.5 * mm
+    has_optional = bool(split_optional_subjects(student.get("optional_subjects", "")))
+    line_gap = 5.8 * mm if has_optional else 6.5 * mm  # squeeze slightly to fit the extra row
 
     fields = [
         ("Student Name", student.get("name", "")),
@@ -155,6 +157,8 @@ def _draw_card(c, x0, y0, student, school_info, subjects):
         ("Date of Birth", student.get("dob", "")),
         ("Exam Center", student.get("exam_center", "")),
     ]
+    if has_optional:
+        fields.append(("Optional Subject(s)", ", ".join(split_optional_subjects(student["optional_subjects"]))))
 
     # Info-box watermark: the faded/blurred school logo filling the details
     # area, drawn first so the text above renders on top of it.
@@ -174,8 +178,14 @@ def _draw_card(c, x0, y0, student, school_info, subjects):
     for label, value in fields:
         c.setFont("Helvetica-Bold", 9)
         c.drawString(detail_x, detail_y, f"{label}:")
-        c.setFont("Helvetica", 9)
-        c.drawString(detail_x + 32 * mm, detail_y, str(value))
+        # shrink long values (e.g. several optional subjects) so they never hit the photo box
+        value = str(value)
+        max_val_w = photo_x - (detail_x + 32 * mm) - 3 * mm
+        font_size = 9
+        while font_size > 6 and c.stringWidth(value, "Helvetica", font_size) > max_val_w:
+            font_size -= 0.5
+        c.setFont("Helvetica", font_size)
+        c.drawString(detail_x + 32 * mm, detail_y, value)
         detail_y -= line_gap
 
     # --- Subjects table ---
@@ -305,18 +315,29 @@ def _draw_instructions(c, x0, y_top, width, instructions=None):
     return y
 
 
-def _subjects_for_student(subjects, student):
+def _subjects_for_student(subjects, student, all_students=None):
     """
     Returns only the subjects that apply to this student: subjects with no
     class_section (common to all classes) plus any whose class_section
     matches the student's class_section (case-insensitive, trimmed).
     """
     student_class = (student.get("class_section") or "").strip().lower()
+    chosen = {n.lower() for n in split_optional_subjects(student.get("optional_subjects", ""))}
+    known_optional = {n.lower() for n in all_known_optional_subjects()}
+    if all_students:
+        for st in all_students:
+            known_optional |= {n.lower() for n in split_optional_subjects(st.get("optional_subjects", ""))}
+
     matched = []
     for s in subjects:
         subject_class = (s.get("class_section") or "").strip().lower()
-        if not subject_class or subject_class == student_class:
-            matched.append(s)
+        if subject_class and subject_class != student_class:
+            continue
+        name = (s.get("subject_name") or "").strip().lower()
+        # An optional subject is only printed for students who selected it.
+        if name in known_optional and name not in chosen:
+            continue
+        matched.append(s)
     return matched
 
 
@@ -338,7 +359,7 @@ def generate_admit_cards_pdf(students, school_info, subjects, output_path):
     instructions = school_info.get("instructions") or None
 
     for student in students:
-        student_subjects = _subjects_for_student(subjects, student)
+        student_subjects = _subjects_for_student(subjects, student, students)
         _draw_card(c, margin_x, margin_y, student, school_info, student_subjects)
 
         # Instructions block, printed just below the admit card on the same page
