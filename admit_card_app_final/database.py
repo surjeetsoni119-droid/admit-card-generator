@@ -53,9 +53,16 @@ def init_db():
             mother_name TEXT,
             dob TEXT,
             exam_center TEXT,
-            photo_path TEXT
+            photo_path TEXT,
+            optional_subjects TEXT DEFAULT ''
         )
     """)
+
+    # Migrate older databases that don't have the optional_subjects column yet.
+    cur.execute("PRAGMA table_info(students)")
+    student_cols = {row["name"] for row in cur.fetchall()}
+    if "optional_subjects" not in student_cols:
+        cur.execute("ALTER TABLE students ADD COLUMN optional_subjects TEXT DEFAULT ''")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS subjects (
@@ -128,8 +135,8 @@ def add_student(data: dict):
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO students (roll_no, name, class_section, father_name, mother_name,
-                               dob, exam_center, photo_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                               dob, exam_center, photo_path, optional_subjects)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data.get("roll_no", ""),
         data.get("name", ""),
@@ -139,6 +146,7 @@ def add_student(data: dict):
         data.get("dob", ""),
         data.get("exam_center", ""),
         data.get("photo_path", ""),
+        data.get("optional_subjects", ""),
     ))
     conn.commit()
     conn.close()
@@ -152,8 +160,8 @@ def bulk_add_students(rows: list):
         try:
             cur.execute("""
                 INSERT INTO students (roll_no, name, class_section, father_name, mother_name,
-                                       dob, exam_center, photo_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                       dob, exam_center, photo_path, optional_subjects)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 str(data.get("roll_no", "")).strip(),
                 str(data.get("name", "")).strip(),
@@ -163,6 +171,7 @@ def bulk_add_students(rows: list):
                 str(data.get("dob", "")).strip(),
                 str(data.get("exam_center", "")).strip(),
                 str(data.get("photo_path", "")).strip(),
+                str(data.get("optional_subjects", "")).strip(),
             ))
         except sqlite3.IntegrityError:
             # duplicate roll_no -> update existing record instead
@@ -180,6 +189,12 @@ def bulk_add_students(rows: list):
                 str(data.get("photo_path", "")).strip(),
                 str(data.get("roll_no", "")).strip(),
             ))
+            # Only overwrite optional subjects if the import actually supplied them
+            if "optional_subjects" in data:
+                cur.execute("UPDATE students SET optional_subjects=? WHERE roll_no=?", (
+                    str(data.get("optional_subjects", "")).strip(),
+                    str(data.get("roll_no", "")).strip(),
+                ))
     conn.commit()
     conn.close()
 
@@ -198,12 +213,13 @@ def update_student(student_id, data: dict):
     cur = conn.cursor()
     cur.execute("""
         UPDATE students SET roll_no=?, name=?, class_section=?, father_name=?, mother_name=?,
-               dob=?, exam_center=?, photo_path=?
+               dob=?, exam_center=?, photo_path=?, optional_subjects=?
         WHERE id=?
     """, (
         data.get("roll_no", ""), data.get("name", ""), data.get("class_section", ""),
         data.get("father_name", ""), data.get("mother_name", ""), data.get("dob", ""),
-        data.get("exam_center", ""), data.get("photo_path", ""), student_id
+        data.get("exam_center", ""), data.get("photo_path", ""),
+        data.get("optional_subjects", ""), student_id
     ))
     conn.commit()
     conn.close()
