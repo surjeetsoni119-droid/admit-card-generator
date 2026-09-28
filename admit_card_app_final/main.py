@@ -16,7 +16,8 @@ from PIL import Image
 
 import database as db
 from pdf_generator import generate_admit_cards_pdf
-from utils import get_base_dir, get_resource_dir
+from utils import (get_base_dir, get_resource_dir, get_optional_subject_choices,
+                   split_optional_subjects)
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -245,12 +246,13 @@ class App(ctk.CTk):
         self.student_count_label = ctk.CTkLabel(btn_row, text="")
         self.student_count_label.pack(side="right", padx=4)
 
-        columns = ("id", "roll_no", "name", "class_section", "father_name", "exam_center")
+        columns = ("id", "roll_no", "name", "class_section", "optional_subjects", "father_name", "exam_center")
         self.student_tree = ttk.Treeview(frame, columns=columns, show="headings", height=18)
         headings = {"id": "ID", "roll_no": "Roll No.", "name": "Name",
-                    "class_section": "Class/Sec", "father_name": "Father's Name",
+                    "class_section": "Class/Sec", "optional_subjects": "Optional Subject(s)",
+                    "father_name": "Father's Name",
                     "exam_center": "Exam Center"}
-        widths = {"id": 40, "roll_no": 90, "name": 200, "class_section": 100,
+        widths = {"id": 40, "roll_no": 90, "name": 200, "class_section": 100, "optional_subjects": 200,
                   "father_name": 180, "exam_center": 200}
         for c in columns:
             self.student_tree.heading(c, text=headings[c])
@@ -267,6 +269,7 @@ class App(ctk.CTk):
         for s in students:
             self.student_tree.insert("", "end", values=(
                 s["id"], s["roll_no"], s["name"], s["class_section"],
+                s.get("optional_subjects", "") or "",
                 s["father_name"], s["exam_center"]
             ))
         self.student_count_label.configure(text=f"Total students: {len(students)}")
@@ -275,7 +278,7 @@ class App(ctk.CTk):
     def open_add_student_dialog(self, existing=None):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Edit Student" if existing else "Add Student")
-        dialog.geometry("420x480")
+        dialog.geometry("440x760")
         dialog.grab_set()
 
         fields = ["roll_no", "name", "class_section", "father_name", "mother_name", "dob", "exam_center"]
@@ -284,11 +287,83 @@ class App(ctk.CTk):
                   "dob": "Date of Birth (DD-MM-YYYY)", "exam_center": "Exam Center"}
         vars_map = {}
 
+        # ---- Optional-subject state (shown only for Class 10 / 11 / 12) ----
+        opt_frame = ctk.CTkFrame(dialog, fg_color="#eef3fb", corner_radius=8)
+        opt_vars = {}      # subject name -> BooleanVar (ticked or not)
+        opt_custom = []    # extra subjects typed in by the teacher
+        saved_opts = split_optional_subjects(existing.get("optional_subjects", "")) if existing else []
+        first_render = [True]
+
+        def render_optional_subjects(*_, force_ticked=None):
+            """(Re)build the checkbox list. Runs whenever Class/Section text changes."""
+            choices = get_optional_subject_choices(vars_map["class_section"].get())
+
+            if force_ticked is not None:
+                ticked = {n.lower() for n in force_ticked}
+            elif first_render[0]:
+                first_render[0] = False
+                ticked = {n.lower() for n in saved_opts}
+                std = [c.lower() for c in choices]
+                if choices:  # saved names outside the standard list = custom subjects
+                    for n in saved_opts:
+                        if n.lower() not in std:
+                            opt_custom.append(n)
+            else:
+                ticked = {n.lower() for n, var in opt_vars.items() if var.get()}
+
+            for w in opt_frame.winfo_children():
+                w.destroy()
+            opt_vars.clear()
+
+            if not choices:  # not class 10 / 11 / 12 -> hide the whole box
+                opt_custom.clear()
+                opt_frame.pack_forget()
+                return
+
+            opt_frame.pack(fill="x", padx=20, pady=(8, 4), after=class_entry)
+            ctk.CTkLabel(opt_frame, text="Optional Subject(s) - tick all that apply",
+                         font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
+
+            for name in choices + opt_custom:
+                var = ctk.BooleanVar(value=name.lower() in ticked)
+                opt_vars[name] = var
+                ctk.CTkCheckBox(opt_frame, text=name, variable=var).pack(anchor="w", padx=14, pady=2)
+
+            add_row = ctk.CTkFrame(opt_frame, fg_color="transparent")
+            add_row.pack(fill="x", padx=10, pady=(6, 8))
+            custom_var = ctk.StringVar()
+            custom_entry = ctk.CTkEntry(add_row, textvariable=custom_var, width=230,
+                                        placeholder_text="Other subject (type name)")
+            custom_entry.pack(side="left")
+
+            def add_custom(event=None):
+                name = custom_var.get().strip()
+                if not name:
+                    return
+                current = {n for n, v in opt_vars.items() if v.get()}
+                match = [n for n in opt_vars if n.lower() == name.lower()]
+                if match:                      # already listed -> just tick it
+                    current.add(match[0])
+                else:
+                    opt_custom.append(name)
+                    current.add(name)
+                render_optional_subjects(force_ticked=current)
+
+            ctk.CTkButton(add_row, text="+ Add", width=70, command=add_custom).pack(side="left", padx=6)
+            custom_entry.bind("<Return>", add_custom)
+
+        class_entry = None
         for i, f in enumerate(fields):
             ctk.CTkLabel(dialog, text=labels[f]).pack(anchor="w", padx=20, pady=(10 if i == 0 else 4, 0))
             v = ctk.StringVar(value=existing.get(f, "") if existing else "")
-            ctk.CTkEntry(dialog, textvariable=v, width=360).pack(padx=20)
+            entry = ctk.CTkEntry(dialog, textvariable=v, width=360)
+            entry.pack(padx=20)
             vars_map[f] = v
+            if f == "class_section":
+                class_entry = entry
+                v.trace_add("write", render_optional_subjects)
+
+        render_optional_subjects()  # initial state (needed when editing a student)
 
         photo_var = ctk.StringVar(value=existing.get("photo_path", "") if existing else "")
         ctk.CTkLabel(dialog, text="Student Photo").pack(anchor="w", padx=20, pady=(10, 0))
@@ -301,6 +376,7 @@ class App(ctk.CTk):
         def save():
             data = {f: vars_map[f].get().strip() for f in fields}
             data["photo_path"] = photo_var.get()
+            data["optional_subjects"] = ", ".join(n for n, v in opt_vars.items() if v.get())
             if not data["roll_no"] or not data["name"]:
                 messagebox.showwarning("Missing info", "Roll No. and Name are required.")
                 return
@@ -377,6 +453,8 @@ class App(ctk.CTk):
         for _, r in df.iterrows():
             row = {c: r.get(c, "") for c in expected}
             row["photo_path"] = ""
+            if "optional_subjects" in df.columns:   # e.g. "Music, Arts"
+                row["optional_subjects"] = r.get("optional_subjects", "")
             rows.append(row)
 
         db.bulk_add_students(rows)
